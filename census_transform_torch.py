@@ -28,8 +28,8 @@ def disparity_interp(disp_L, disp_R):
     device = disp_L.device
     grid_x, grid_y = torch.meshgrid(torch.arange(disp_L.size(1)), torch.arange(disp_L.size(2)))
 
-    R2L_y_grid = torch.clamp(grid_y.to(device) - disp_L, min=0, max=disp_L.size(2)-1)
-    L2R_y_grid = torch.clamp(grid_y.to(device) + disp_R, min=0, max=disp_L.size(2)-1)
+    R2L_y_grid = torch.clamp(grid_y.to(device) - disp_L, min=0, max=disp_L.size(2)-1).type(torch.DoubleTensor)
+    L2R_y_grid = torch.clamp(grid_y.to(device) + disp_R, min=0, max=disp_L.size(2)-1).type(torch.DoubleTensor)
 
     R2L_y_grid1 = torch.floor(R2L_y_grid).long()
     R2L_y_grid2 = torch.clamp(torch.floor(R2L_y_grid+1), min=0, max=disp_L.size(2)-1).long()
