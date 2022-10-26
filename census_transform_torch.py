@@ -76,7 +76,7 @@ def stereo_matching(left_img, right_img, min_disp, max_disp, aggreate_size, cens
             cost = torch.reshape(cost, (-1,))
 
             disp_R[i, torch.reshape(tar_idx, (left_img.size(2), left_img.size(3)))] = i_disp_R[tar_idx] + ((cost[yP] - cost[yM]) / (2*(2*cost[yD] - cost[yM] - cost[yP])))
-    del i_disp_R
+        del i_disp_R
     del cost_volume_R
     torch.cuda.empty_cache()
     disp_R = disp_R + min_disp
