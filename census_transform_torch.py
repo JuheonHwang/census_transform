@@ -39,8 +39,8 @@ def disparity_interp(disp_L, disp_R):
     L2R_y_grid2 = torch.clamp(torch.floor(L2R_y_grid+1), min=0, max=disp_L.size(2)-1).long()
     L2R_alpha = L2R_y_grid - L2R_y_grid1
 
-    disp_R2L = torch.reshape(torch.reshape(R2L_alpha, (bz, -1)) * disp_R[:, torch.reshape(grid_x, (bz, -1)), torch.reshape(R2L_y_grid2.long(), (bz, -1))] + torch.reshape(1-R2L_alpha, (bz, -1)) * disp_R[:, torch.reshape(grid_x, (bz, -1)), torch.reshape(R2L_y_grid1.long(), (bz, -1))], (bz, disp_L.size(1), disp_L.size(1)))
-    disp_L2R = torch.reshape(torch.reshape(L2R_alpha, (bz, -1)) * disp_L[:, torch.reshape(grid_x, (bz, -1)), torch.reshape(L2R_y_grid2.long(), (bz, -1))] + torch.reshape(1-L2R_alpha, (bz, -1)) * disp_L[:, torch.reshape(grid_x, (bz, -1)), torch.reshape(L2R_y_grid1.long(), (bz, -1))], (bz, disp_L.size(1), disp_L.size(1)))
+    disp_R2L = torch.reshape(torch.reshape(R2L_alpha, (bz, -1)) * disp_R[:, torch.reshape(grid_x, (bz, -1)), torch.reshape(R2L_y_grid2.long(), (bz, -1))] + torch.reshape(1-R2L_alpha, (bz, -1)) * disp_R[:, torch.reshape(grid_x, (bz, -1)), torch.reshape(R2L_y_grid1.long(), (bz, -1))], (bz, disp_L.size(1), disp_L.size(2)))
+    disp_L2R = torch.reshape(torch.reshape(L2R_alpha, (bz, -1)) * disp_L[:, torch.reshape(grid_x, (bz, -1)), torch.reshape(L2R_y_grid2.long(), (bz, -1))] + torch.reshape(1-L2R_alpha, (bz, -1)) * disp_L[:, torch.reshape(grid_x, (bz, -1)), torch.reshape(L2R_y_grid1.long(), (bz, -1))], (bz, disp_L.size(1), disp_L.size(2)))
 
     return disp_R2L, disp_L2R
 
