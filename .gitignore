@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+venv-*/
+env/
+
+# Build outputs
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile.cmake
+*.o
+*.obj
+*.a
+*.so
+*.exe
+
+# Generated results
+*.pfm
+*.npy
+disp_*.png
+left.png
+right.png
+# ...but keep the sample stereo pair and its ground truth
+!data/sample/**
+
+# Downloaded / raw data (keep data/README.md and scripts)
+data/raw/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
