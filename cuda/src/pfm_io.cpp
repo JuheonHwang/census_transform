@@ -29,7 +29,7 @@
  */
 
  /**
-  * \file PFMReadWrite.cpp
+  * \file pfm_io.cpp
   * \brief Implementation of loadPFM and savePFM functions.
   * \author Antoine Toisoul Le Cann
   * \date September, 1st, 2016
@@ -37,7 +37,7 @@
   * Implementation of loadPFM and savePFM functions.
   */
 
-#include "PFMReadWrite.h"
+#include "pfm_io.h"
 
 using namespace std;
 using namespace cv;

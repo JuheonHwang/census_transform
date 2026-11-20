@@ -1,7 +1,50 @@
+// v3_rolling.cu -- stage 3 (final): fused kernel + rolling 3-slice cost buffers.
+// No cost volume is stored: VectorBox_N_Cost keeps the running minimum (and the two neighbouring
+// costs needed for the sub-pixel fit) per pixel, so memory does not depend on D. Costs D + 1
+// iterations per direction, each = VectorShift + VectorCensusXOR_N_Sum + VectorBox_N_Cost.
+// Kernels: VectorCensusTransform, VectorCensusXOR_N_Sum, VectorBox_N_Cost, VectorShift,
+//          GetDispFloat, GetDispInterp, ThresholdDisp, GetDispUchar.
+// Device buffers (bytes): images 2*H*W (freed after census); census 2*n*H*W; CensusSum 2*H*W;
+//   Cost_a, Cost_b 2 * 12*H*W (3 uint slices each); minCosts 12*H*W; minDispValue 2*H*W;
+//   float disparity 2 * 4*H*W (left allocated before the right pass); interpolation 2 * 4*H*W;
+//   uchar output 2 * H*W. Total is about 2*n*H*W + 40*H*W + ... independent of D.
+// Also returns the float disparity maps (for PFM output) in addition to the uchar visualisation.
+//
+// Notation used in all comments of this file
+//   H, W        image height / width            D = max_disp
+//   K           census_filter_size (census window is K x K)
+//   A           aggreate_filter_size (box-filter window is A x A)
+//   n           = ceil(K*K / 8) = bytes of census code per pixel
+//   B           = ceil(K / 8)   = bytes per census window row
+//   idx         linear pixel index  idx = i * W + j   (i = row, j = column)
+//
+// Bit-packed census buffer (uchar, H * W * n bytes):
+//   census[(i * W + j) * n + b],  b = 0 .. n-1
+//   Byte b of pixel (i, j) encodes window row c_i = b / B, window columns
+//   (b % B) * 8 .. (b % B) * 8 + 7. Bit = (centre pixel < neighbour), MSB first.
+//   The last byte of a window row holds only K % 8 bits (right aligned).
+//
+// Disparity sign convention: the "left" image is the reference; its pixel
+// (i, j) is compared with the "right" image pixel (i, j + disp). The right
+// pass uses j - disp. Border coordinates are clamped (replicated).
+
 #include "census.cuh"
 #include <stdio.h>
+#include <limits.h>
 #define POW(X) ((X)*(X))
 
+// VectorCensusTransform: bit-packed census transform of one image.
+//   Output : censusTransform[(i * W + j) * n + b]  (layout described at the top of this file)
+//   Threads: one thread per OUTPUT BYTE, grid-stride loop over idx in [0, n * H * W).
+//   Index decomposition of idx:
+//     i = idx / (W * n)                row
+//     j = (idx % (W * n)) / n          column
+//     b = idx % n                      byte within the pixel's code
+//     c_i = b / B                      census window row this byte covers
+//     c_j = (b % B) * 8 + bit          census window column of each bit
+//   Bit value: image(i, j) < image(i + c_i - K/2, j + c_j - K/2), coordinates clamped to the image.
+//   NOTE (existing quirk, not changed): n = ceil(K*K/8) is smaller than K * B unless K is a
+//   multiple of 8, so window rows c_i > (n - 1) / B are never encoded (K = 11: rows 0..7 of 0..10).
 __global__ void VectorCensusTransform(uchar* censusTransform, uchar* image, const int census_size, const int census_filter_size, const int img_h, const int img_w)
 {
 	const int census_half = census_filter_size / 2;
@@ -33,6 +76,15 @@ __global__ void VectorCensusTransform(uchar* censusTransform, uchar* image, cons
 	}
 }
 
+// VectorCensusXOR_N_Sum (v2, v3): fused XOR + sum, i.e. VectorCensusXOR + VectorCensusSum in one kernel.
+//   Output : Census_sum[idx] (ushort, H * W), pixel-wise cost for ONE disparity `disp`.
+//   Threads: one thread per PIXEL (grid-stride loop over idx in [0, H * W)).
+//   Each thread walks the n bytes of its pixel: byte b of the left code at (i, j) is XORed with
+//   byte b of the right code at (i, clamp(j + disp, 0, W-1)); no n * H * W XOR buffer is needed.
+//   disp may be negative (right pass: arguments swapped and disp negated).
+//   NOTE (existing quirk, not changed): the per-byte "popcount" is written as an OR of the 8 bits
+//   ((x & 1) | ((x >> 1) & 1) | ...), which yields 0/1 per byte, i.e. it counts non-zero XOR bytes
+//   rather than differing bits. A true Hamming weight would use '+' (or __popc).
 __global__ void VectorCensusXOR_N_Sum(ushort* Census_sum, uchar* leftCensus, uchar* rightCensus, const int census_size, const int census_filter_size, const int img_h, const int img_w, int disp)
 {
 	const int census_size_divide_by_8 = (int)ceil(census_size / 8.0f);
@@ -58,6 +110,27 @@ __global__ void VectorCensusXOR_N_Sum(ushort* Census_sum, uchar* leftCensus, uch
 }
 
 
+// VectorBox_N_Cost (v3): box filter + running minimum over disparity (the rolling-buffer scheme).
+//   Instead of storing D cost slices, v3 keeps three H * W slices per buffer:
+//     cost_dummy[0 * H * W + idx] = cost(d - 2)   cost_dummy[1 * H * W + idx] = cost(d - 1)
+//     cost_dummy[2 * H * W + idx] = cost(d)       (d = the `disp` argument)
+//   and a "best so far" record for each pixel:
+//     minCosts[0..2][idx] = (cost(d*-1), cost(d*), cost(d*+1)) at the best disparity d* so far (uint)
+//     minDispValue[idx]   = d*                                                         (ushort)
+//   Host loop (see DiffBoxImages): two buffers a / b are ping-ponged. For each disp >= 1 the host
+//   calls VectorShift(curr, prev) (curr[0] = prev[1], curr[1] = prev[2]), then
+//   VectorCensusXOR_N_Sum, then this kernel with cost_dummy = curr.
+//   This kernel:
+//     1. aggregates Census_sum over the A x A window (same as VectorBox), giving cost(disp);
+//     2. disp == 0: fills slots 1 and 2 with it (so cost(-1) is clamped to cost(0) after the shift);
+//        disp  > 0: stores it in slot 2, then tests the MIDDLE slot cost(disp - 1) against
+//        minCosts[1]; if strictly smaller, records minDispValue = disp - 1 and copies all three
+//        slots to minCosts. The candidate is therefore evaluated one step late, when its
+//        "next" neighbour is available for the sub-pixel fit.
+//   The host runs disp = 0 .. D, so the last candidate D-1 gets its "next" slice from the clamped
+//   XOR at min(disp, D-1) (a duplicate of cost(D-1), matching the clamping in v1/v2).
+//   minCosts must be initialised to 0xFFFFFFFF (cudaMemset with 0xFF bytes) before each pass.
+//   Threads: one thread per PIXEL; each thread only touches its own idx, so there are no races.
 __global__ void VectorBox_N_Cost(uint* minCosts, ushort* minDispValue, uint* cost_dummy, ushort* Census_sum, const int aggreate_filter_size, const int img_h, const int img_w, int disp)
 {
 	const int aggreate_half = (aggreate_filter_size - 1) / 2;
@@ -100,6 +173,10 @@ __global__ void VectorBox_N_Cost(uint* minCosts, ushort* minDispValue, uint* cos
 	}
 }
 
+// VectorShift (v3): slide the 3-slice cost window by one disparity.
+//   cost_curr[0] = cost_prev[1]; cost_curr[1] = cost_prev[2]   (slice 2 is written by VectorBox_N_Cost).
+//   Threads: one thread per PIXEL; slices are H * W uints each (index s * H * W + idx).
+//   The host alternates which of the two buffers is `curr` / `prev` on every disparity.
 __global__ void VectorShift(uint* cost_curr, uint* cost_prev, const int img_h, const int img_w)
 {
 	for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < img_h * img_w; idx += blockDim.x * gridDim.x) {
@@ -108,6 +185,13 @@ __global__ void VectorShift(uint* cost_curr, uint* cost_prev, const int img_h, c
 	}
 }
 
+// GetDispFloat (v3): turn the recorded best disparity into a float disparity map.
+//   Output : disp_map_float[idx].
+//   Threads: one thread per PIXEL. No scan over disparity: the winner was already tracked.
+//   Sub-pixel: disp = minDispValue + (next - prev) / (2 * (2 * curr - prev - next)) with
+//   prev / curr / next = minCosts[0 / 1 / 2][idx]; otherwise disp = minDispValue.
+//   Caveat (not changed): the denominator is 0 on flat cost curves (NaN/inf), and at d* = 0 or
+//   D-1 the duplicated neighbour gives an offset of -0.5 or +0.5.
 __global__ void GetDispFloat(float* disp_map_float, uint* minCosts, ushort* minDispValue, const bool sub_pixel, const int img_h, const int img_w, const int max_disp)
 {
 	for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < img_h * img_w; idx += blockDim.x * gridDim.x) {
@@ -126,6 +210,13 @@ __global__ void GetDispFloat(float* disp_map_float, uint* minCosts, ushort* minD
 	}
 }
 
+// GetDispInterp: sample the OTHER image's disparity map at the position this pixel maps to
+//   (left-right consistency, step 1). Output: interp_disp_map[idx] (float).
+//   Threads: one thread per PIXEL.
+//   x' = clamp(j + right2left * opt_disp_map[idx], 0, W - 1); result = linear interpolation of
+//   target_disp_map(i, x') between columns floor(x') and floor(x') + 1.
+//   `right2left` is really a sign (+1 / -1): +1 maps a left pixel to the right image
+//   (x + d), -1 maps a right pixel to the left image (x - d), matching the search direction above.
 __global__ void GetDispInterp(float* interp_disp_map, float* target_disp_map, float* opt_disp_map, const int right2left, const int img_h, const int img_w)
 {
 	for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < img_h * img_w; idx += blockDim.x * gridDim.x) {
@@ -141,6 +232,9 @@ __global__ void GetDispInterp(float* interp_disp_map, float* target_disp_map, fl
 	}
 }
 
+// ThresholdDisp: left-right consistency check (step 2). In place on disp_map.
+//   Threads: one thread per PIXEL. If |interp_disp_map - disp_map| > threshold (disparity units)
+//   the pixel is marked invalid by setting its disparity to 0.
 __global__ void ThresholdDisp(float* disp_map, float* interp_disp_map, const int threshold, const int img_h, const int img_w)
 {
 	for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < img_h * img_w; idx += blockDim.x * gridDim.x) {
@@ -151,6 +245,8 @@ __global__ void ThresholdDisp(float* disp_map, float* interp_disp_map, const int
 	}
 }
 
+// GetDispUchar: visualisation. disp_map_uchar = (uchar) min(256 / D * disp, 255).
+//   Threads: one thread per PIXEL. Negative or NaN disparities are not guarded (the cast is undefined).
 __global__ void GetDispUchar(uchar* disp_map_uchar, float* disp_map_float, const int img_h, const int img_w, const int max_disp)
 {
 	for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < img_h * img_w; idx += blockDim.x * gridDim.x) {
@@ -192,48 +288,6 @@ __host__ void DiffBoxImages(float* pLeftOutPfm, float* pRightOutPfm, uchar* pLef
 	const int census_size = POW(census_filter_size);
 
 
-	cudaDeviceProp  prop;
-
-	//CUDA device check
-	int count;
-	cudaGetDeviceCount(&count);
-
-	for (int i = 0; i < count; i++) {
-		cudaGetDeviceProperties(&prop, i);
-		printf("   --- General Information for device %d ---\n", i);
-		printf("Name:  %s\n", prop.name);
-		printf("Compute capability:  %d.%d\n", prop.major, prop.minor);
-		printf("Clock rate:  %d\n", prop.clockRate);
-		printf("Device copy overlap:  ");
-		if (prop.deviceOverlap)
-			printf("Enabled\n");
-		else
-			printf("Disabled\n");
-		printf("Kernel execution timeout :  ");
-		if (prop.kernelExecTimeoutEnabled)
-			printf("Enabled\n");
-		else
-			printf("Disabled\n");
-		printf("\n");
-
-		printf("   --- Memory Information for device %d ---\n", i);
-		printf("Total global mem:  %ld\n", prop.totalGlobalMem);
-		printf("Total constant Mem:  %ld\n", prop.totalConstMem);
-		printf("Max mem pitch:  %ld\n", prop.memPitch);
-		printf("Texture Alignment:  %ld\n", prop.textureAlignment);
-		printf("\n");
-
-		printf("   --- MP Information for device %d ---\n", i);
-		printf("Multiprocessor count:  %d\n", prop.multiProcessorCount);
-		printf("Shared mem per mp:  %ld\n", prop.sharedMemPerBlock);
-		printf("Registers per mp:  %d\n", prop.regsPerBlock);
-		printf("Threads in warp:  %d\n", prop.warpSize);
-		printf("Max threads per block:  %d\n", prop.maxThreadsPerBlock);
-		printf("Max thread dimensions:  (%d, %d, %d)\n", prop.maxThreadsDim[0], prop.maxThreadsDim[1], prop.maxThreadsDim[2]);
-		printf("Max grid dimensions:  (%d, %d, %d)\n", prop.maxGridSize[0], prop.maxGridSize[1], prop.maxGridSize[2]);
-		printf("\n");
-	}
-
 	//int i = 1;
 	//for (; i < census_size; i *= 8);
 	int n = static_cast<int>(ceil(census_size / 8.0f));
@@ -261,9 +315,9 @@ __host__ void DiffBoxImages(float* pLeftOutPfm, float* pRightOutPfm, uchar* pLef
 	checkCudaErrors(cudaMalloc(&d_rightCensus_mem, n * img_height * img_width * sizeof(uchar)));
 	checkCudaErrors(cudaMemset(d_rightCensus_mem, 0, n * img_height * img_width * sizeof(uchar)));
 
-	VectorCensusTransform << <128, 128 >> > (d_leftCensus_mem, d_imageLeft_mem, census_size, census_filter_size, img_height, img_width);
-	VectorCensusTransform << <128, 128 >> > (d_rightCensus_mem, d_imageRight_mem, census_size, census_filter_size, img_height, img_width);
-	cudaThreadSynchronize();
+	VectorCensusTransform <<<kNumBlocks, kNumThreads>>> (d_leftCensus_mem, d_imageLeft_mem, census_size, census_filter_size, img_height, img_width);
+	VectorCensusTransform <<<kNumBlocks, kNumThreads>>> (d_rightCensus_mem, d_imageRight_mem, census_size, census_filter_size, img_height, img_width);
+	cudaDeviceSynchronize();
 	checkCUDA(__LINE__, cudaGetLastError());
 	checkCudaErrors(cudaFree(d_imageLeft_mem)); checkCudaErrors(cudaFree(d_imageRight_mem));
 
@@ -275,77 +329,80 @@ __host__ void DiffBoxImages(float* pLeftOutPfm, float* pRightOutPfm, uchar* pLef
 	checkCudaErrors(cudaMalloc(&d_Cost_b_mem, 3 * img_height * img_width * sizeof(uint)));
 
 	checkCudaErrors(cudaMalloc(&d_minCosts_mem, 3 * img_height * img_width * sizeof(uint)));
+	// cudaMemset fills BYTES: UINT_MAX is truncated to 0xFF, so every uint becomes 0xFFFFFFFF (= UINT_MAX)
 	checkCudaErrors(cudaMemset(d_minCosts_mem, UINT_MAX, 3 * img_height * img_width * sizeof(uint)));
 
 	checkCudaErrors(cudaMalloc(&d_minDispValue_mem, img_height * img_width * sizeof(ushort)));
 
 	// left
 	// initialize
-	VectorCensusXOR_N_Sum << <128, 128 >> > (d_CensusSum_mem, d_leftCensus_mem, d_rightCensus_mem, census_size, census_filter_size, img_height, img_width, 0);
-	cudaThreadSynchronize();
+	VectorCensusXOR_N_Sum <<<kNumBlocks, kNumThreads>>> (d_CensusSum_mem, d_leftCensus_mem, d_rightCensus_mem, census_size, census_filter_size, img_height, img_width, 0);
+	cudaDeviceSynchronize();
 	checkCUDA(__LINE__, cudaGetLastError());
 
-	VectorBox_N_Cost << <128, 128 >> > (d_minCosts_mem, d_minDispValue_mem, d_Cost_a_mem, d_CensusSum_mem, aggreate_filter_size, img_height, img_width, 0);
-	cudaThreadSynchronize();
+	VectorBox_N_Cost <<<kNumBlocks, kNumThreads>>> (d_minCosts_mem, d_minDispValue_mem, d_Cost_a_mem, d_CensusSum_mem, aggreate_filter_size, img_height, img_width, 0);
+	cudaDeviceSynchronize();
 	checkCUDA(__LINE__, cudaGetLastError());
 
 	
 	for (int disp = 1; disp < (max_disp + 1); disp++) {
 		// shift
-		VectorShift << <128, 128 >> > (((disp % 2) ? d_Cost_b_mem : d_Cost_a_mem), ((disp % 2) ? d_Cost_a_mem : d_Cost_b_mem), img_height, img_width);
-        cudaThreadSynchronize();
+		VectorShift <<<kNumBlocks, kNumThreads>>> (((disp % 2) ? d_Cost_b_mem : d_Cost_a_mem), ((disp % 2) ? d_Cost_a_mem : d_Cost_b_mem), img_height, img_width);
+        cudaDeviceSynchronize();
 		checkCUDA(__LINE__, cudaGetLastError());
 		
-		VectorCensusXOR_N_Sum << <128, 128 >> > (d_CensusSum_mem, d_leftCensus_mem, d_rightCensus_mem, census_size, census_filter_size, img_height, img_width, min(disp, max_disp - 1));
-		cudaThreadSynchronize();
+		VectorCensusXOR_N_Sum <<<kNumBlocks, kNumThreads>>> (d_CensusSum_mem, d_leftCensus_mem, d_rightCensus_mem, census_size, census_filter_size, img_height, img_width, min(disp, max_disp - 1));
+		cudaDeviceSynchronize();
 		checkCUDA(__LINE__, cudaGetLastError());
 
-		VectorBox_N_Cost << <128, 128 >> > (d_minCosts_mem, d_minDispValue_mem, ((disp % 2) ? d_Cost_b_mem : d_Cost_a_mem), d_CensusSum_mem, aggreate_filter_size, img_height, img_width, disp);
-		cudaThreadSynchronize();
+		VectorBox_N_Cost <<<kNumBlocks, kNumThreads>>> (d_minCosts_mem, d_minDispValue_mem, ((disp % 2) ? d_Cost_b_mem : d_Cost_a_mem), d_CensusSum_mem, aggreate_filter_size, img_height, img_width, disp);
+		cudaDeviceSynchronize();
 		checkCUDA(__LINE__, cudaGetLastError());
 	}
 
 	// Disp cudaMalloc
 	checkCudaErrors(cudaMalloc(&d_leftDispFloat_mem, img_height * img_width * sizeof(float)));
 
-	GetDispFloat << <128, 128 >> > (d_leftDispFloat_mem, d_minCosts_mem, d_minDispValue_mem, sub_pixel, img_height, img_width, max_disp);
-	cudaThreadSynchronize();
+	GetDispFloat <<<kNumBlocks, kNumThreads>>> (d_leftDispFloat_mem, d_minCosts_mem, d_minDispValue_mem, sub_pixel, img_height, img_width, max_disp);
+	cudaDeviceSynchronize();
 	checkCUDA(__LINE__, cudaGetLastError());
 
 	// right
 	// initialize
+	// cudaMemset fills BYTES: UINT_MAX is truncated to 0xFF, so every uint becomes 0xFFFFFFFF (= UINT_MAX)
 	checkCudaErrors(cudaMemset(d_minCosts_mem, UINT_MAX, 3 * img_height * img_width * sizeof(uint)));
 
-	VectorCensusXOR_N_Sum << <128, 128 >> > (d_CensusSum_mem, d_rightCensus_mem, d_leftCensus_mem, census_size, census_filter_size, img_height, img_width, 0);
-	cudaThreadSynchronize();
+	VectorCensusXOR_N_Sum <<<kNumBlocks, kNumThreads>>> (d_CensusSum_mem, d_rightCensus_mem, d_leftCensus_mem, census_size, census_filter_size, img_height, img_width, 0);
+	cudaDeviceSynchronize();
 	checkCUDA(__LINE__, cudaGetLastError());
 
-	VectorBox_N_Cost << <128, 128 >> > (d_minCosts_mem, d_minDispValue_mem, d_Cost_a_mem, d_CensusSum_mem, aggreate_filter_size, img_height, img_width, 0);
-	cudaThreadSynchronize();
+	VectorBox_N_Cost <<<kNumBlocks, kNumThreads>>> (d_minCosts_mem, d_minDispValue_mem, d_Cost_a_mem, d_CensusSum_mem, aggreate_filter_size, img_height, img_width, 0);
+	cudaDeviceSynchronize();
 	checkCUDA(__LINE__, cudaGetLastError());
 
 	for (int disp = 1; disp < (max_disp + 1); disp++) {
 		// shift
-		VectorShift << <128, 128 >> > (((disp % 2) ? d_Cost_b_mem : d_Cost_a_mem), ((disp % 2) ? d_Cost_a_mem : d_Cost_b_mem), img_height, img_width);
-		cudaThreadSynchronize();
+		VectorShift <<<kNumBlocks, kNumThreads>>> (((disp % 2) ? d_Cost_b_mem : d_Cost_a_mem), ((disp % 2) ? d_Cost_a_mem : d_Cost_b_mem), img_height, img_width);
+		cudaDeviceSynchronize();
 		checkCUDA(__LINE__, cudaGetLastError());
 
-		VectorCensusXOR_N_Sum << <128, 128 >> > (d_CensusSum_mem, d_rightCensus_mem, d_leftCensus_mem, census_size, census_filter_size, img_height, img_width, -min(disp, max_disp - 1));
-		cudaThreadSynchronize();
+		VectorCensusXOR_N_Sum <<<kNumBlocks, kNumThreads>>> (d_CensusSum_mem, d_rightCensus_mem, d_leftCensus_mem, census_size, census_filter_size, img_height, img_width, -min(disp, max_disp - 1));
+		cudaDeviceSynchronize();
 		checkCUDA(__LINE__, cudaGetLastError());
 
-		VectorBox_N_Cost << <128, 128 >> > (d_minCosts_mem, d_minDispValue_mem, ((disp % 2) ? d_Cost_b_mem : d_Cost_a_mem), d_CensusSum_mem, aggreate_filter_size, img_height, img_width, disp);
-		cudaThreadSynchronize();
+		VectorBox_N_Cost <<<kNumBlocks, kNumThreads>>> (d_minCosts_mem, d_minDispValue_mem, ((disp % 2) ? d_Cost_b_mem : d_Cost_a_mem), d_CensusSum_mem, aggreate_filter_size, img_height, img_width, disp);
+		cudaDeviceSynchronize();
 		checkCUDA(__LINE__, cudaGetLastError());
 	}
 	checkCudaErrors(cudaFree(d_leftCensus_mem)); checkCudaErrors(cudaFree(d_rightCensus_mem));
 	checkCudaErrors(cudaFree(d_CensusSum_mem));
+	checkCudaErrors(cudaFree(d_Cost_a_mem)); checkCudaErrors(cudaFree(d_Cost_b_mem));
 
 	// Disp cudaMalloc
 	checkCudaErrors(cudaMalloc(&d_rightDispFloat_mem, img_height * img_width * sizeof(float)));
 
-	GetDispFloat << <128, 128 >> > (d_rightDispFloat_mem, d_minCosts_mem, d_minDispValue_mem, sub_pixel, img_height, img_width, max_disp);
-	cudaThreadSynchronize();
+	GetDispFloat <<<kNumBlocks, kNumThreads>>> (d_rightDispFloat_mem, d_minCosts_mem, d_minDispValue_mem, sub_pixel, img_height, img_width, max_disp);
+	cudaDeviceSynchronize();
 	checkCUDA(__LINE__, cudaGetLastError());
 	checkCudaErrors(cudaFree(d_minCosts_mem));
 	checkCudaErrors(cudaFree(d_minDispValue_mem));
@@ -353,14 +410,14 @@ __host__ void DiffBoxImages(float* pLeftOutPfm, float* pRightOutPfm, uchar* pLef
 	cudaMalloc(&d_left2rightDisp_mem, img_height * img_width * sizeof(float));
 	cudaMalloc(&d_right2leftDisp_mem, img_height * img_width * sizeof(float));
 
-	GetDispInterp << <128, 128 >> > (d_right2leftDisp_mem, d_rightDispFloat_mem, d_leftDispFloat_mem, 1, img_height, img_width);
-	GetDispInterp << <128, 128 >> > (d_left2rightDisp_mem, d_leftDispFloat_mem, d_rightDispFloat_mem, -1, img_height, img_width);
-	cudaThreadSynchronize();
+	GetDispInterp <<<kNumBlocks, kNumThreads>>> (d_right2leftDisp_mem, d_rightDispFloat_mem, d_leftDispFloat_mem, 1, img_height, img_width);
+	GetDispInterp <<<kNumBlocks, kNumThreads>>> (d_left2rightDisp_mem, d_leftDispFloat_mem, d_rightDispFloat_mem, -1, img_height, img_width);
+	cudaDeviceSynchronize();
 	checkCUDA(__LINE__, cudaGetLastError());
 
-	ThresholdDisp << <128, 128 >> > (d_leftDispFloat_mem, d_right2leftDisp_mem, threshold, img_height, img_width);
-	ThresholdDisp << <128, 128 >> > (d_rightDispFloat_mem, d_left2rightDisp_mem, threshold, img_height, img_width);
-	cudaThreadSynchronize();
+	ThresholdDisp <<<kNumBlocks, kNumThreads>>> (d_leftDispFloat_mem, d_right2leftDisp_mem, threshold, img_height, img_width);
+	ThresholdDisp <<<kNumBlocks, kNumThreads>>> (d_rightDispFloat_mem, d_left2rightDisp_mem, threshold, img_height, img_width);
+	cudaDeviceSynchronize();
 	checkCUDA(__LINE__, cudaGetLastError());
 	checkCudaErrors(cudaFree(d_left2rightDisp_mem)); checkCudaErrors(cudaFree(d_right2leftDisp_mem));
 
@@ -368,9 +425,9 @@ __host__ void DiffBoxImages(float* pLeftOutPfm, float* pRightOutPfm, uchar* pLef
 	checkCudaErrors(cudaMalloc(&d_leftDispUchar_mem, img_height * img_width * sizeof(uchar)));
 	checkCudaErrors(cudaMalloc(&d_rightDispUchar_mem, img_height * img_width * sizeof(uchar)));
 
-	GetDispUchar << <128, 128 >> > (d_leftDispUchar_mem, d_leftDispFloat_mem, img_height, img_width, max_disp);
-	GetDispUchar << <128, 128 >> > (d_rightDispUchar_mem, d_rightDispFloat_mem, img_height, img_width, max_disp);
-	cudaThreadSynchronize();
+	GetDispUchar <<<kNumBlocks, kNumThreads>>> (d_leftDispUchar_mem, d_leftDispFloat_mem, img_height, img_width, max_disp);
+	GetDispUchar <<<kNumBlocks, kNumThreads>>> (d_rightDispUchar_mem, d_rightDispFloat_mem, img_height, img_width, max_disp);
+	cudaDeviceSynchronize();
 	checkCUDA(__LINE__, cudaGetLastError());
 	cudaMemcpy(pLeftOutPfm, d_leftDispFloat_mem, img_height * img_width * sizeof(float), cudaMemcpyDeviceToHost);
 	checkCudaErrors(cudaFree(d_leftDispFloat_mem));

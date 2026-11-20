@@ -29,7 +29,7 @@
  */
 
  /**
-  * \file PFMReadWrite.h
+  * \file pfm_io.h
   * \brief Implementation of loadPFM and savePFM functions.
   * \author Antoine Toisoul Le Cann
   * \date September, 1st, 2016
@@ -44,7 +44,6 @@
 #include <fstream>
 
 #include <opencv2/core/core.hpp>
-#include <opencv/highgui.h>
 
   /**
    * Loads a PFM image stored in little endian and returns the image as an OpenCV Mat.
