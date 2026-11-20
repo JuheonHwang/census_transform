@@ -194,7 +194,7 @@ right pass 이후 단계(float map 2개, interpolation 2개, uchar 2개)는 이�
 
 ### v1 / v2 / v3 비교
 
-HW = 921,600, MiB = 2^20 byte. 방향당 launch는 한 방향의 disparity 루프 launch 수이고, 전체는 census, LR check, uchar 변환(각 2, 2, 2, 2)을 포함합니다.
+1280 x 720은 HW = 921,600, 샘플 1216 x 896은 HW = 1,089,536이며, MiB = 2^20 byte. 방향당 launch는 한 방향의 disparity 루프 launch 수이고, 전체는 census, LR check, uchar 변환(각 2, 2, 2, 2)을 포함합니다.
 
 | | v1 | v2 | v3 |
 |---|---|---|---|
@@ -202,13 +202,13 @@ HW = 921,600, MiB = 2^20 byte. 방향당 launch는 한 방향의 disparity 루�
 | 방향당 launch | 3D | 2D | 3D + 2 |
 | 전체 launch | 6D + 10 | 4D + 10 | 6D + 14 |
 | peak 메모리 (byte) | 3nHW + 2HW + 8DHW | 2nHW + 6HW + 4DHW | 2nHW + 44HW |
-| K = 11, D = 300 (n = 16) | 2153.3 MiB | 1088.1 MiB | 66.8 MiB |
-| K = 7, D = 48 (n = 7) | 357.7 MiB | 186.3 MiB | 51.0 MiB |
-| D = 300 전체 launch | 1810 | 1210 | 1814 |
-| D = 48 전체 launch | 298 | 202 | 302 |
+| 1280x720, K = 11, D = 300 (n = 16) | 2153.3 MiB | 1088.1 MiB | 66.8 MiB |
+| 샘플 1216x896, K = 7, D = 128 (n = 7) | 1087.9 MiB | 552.8 MiB | 60.3 MiB |
+| D = 300 전체 launch (해상도 무관) | 1810 | 1210 | 1814 |
+| D = 128 전체 launch (해상도 무관) | 778 | 522 | 782 |
 | 실행 시간 | 측정 필요 | 측정 필요 | 측정 필요 |
 
-v3의 메모리는 K = 11, D = 300에서 v2의 약 1/16(66.8 / 1088.1), K = 7, D = 48에서 약 1/3.7입니다. D가 커질수록 격차는 커집니다. 한편 launch 횟수는 v3가 v2보다 **많습니다**. `VectorShift`가 새로 생겼고 disp = 0 단계가 루프 밖에 한 번 더 있기 때문입니다. v3는 launch를 더 쓰고 메모리를 크게 줄이는 교환입니다. 실제로 어느 쪽이 빠른지는 이 문서에서 말할 수 없습니다.
+v3의 메모리는 K = 11, D = 300에서 v2의 약 1/16(66.8 / 1088.1), 샘플 설정(K = 7, D = 128)에서 약 1/9.2(60.3 / 552.8)입니다. D가 커질수록 격차는 커집니다. 한편 launch 횟수는 v3가 v2보다 **많습니다**. `VectorShift`가 새로 생겼고 disp = 0 단계가 루프 밖에 한 번 더 있기 때문입니다. v3는 launch를 더 쓰고 메모리를 크게 줄이는 교환입니다. 실제로 어느 쪽이 빠른지는 이 문서에서 말할 수 없습니다.
 
 ### 실행 시간 측정하기
 
@@ -219,7 +219,7 @@ cd cuda
 for v in census_v1 census_v2 census_v3; do
   mkdir -p out_$v
   ./build/$v ../data/sample/right.png ../data/sample/left.png \
-      --max-disp 48 --census 7 --aggregate 11 --threshold 1 --no-display \
+      --max-disp 128 --census 7 --aggregate 11 --threshold 1 --no-display \
       --out-dir out_$v | grep "computation time"
 done
 ```
@@ -233,7 +233,7 @@ done
 
 ## 5. 트레이드오프
 
-- **`VectorShift`가 반복마다 slice 두 개를 복사합니다.** 읽기 2개와 쓰기 2개, 즉 반복당 `16HW` byte(1280 x 720에서 약 14.1 MiB)의 global memory 요청과 launch 하나가 추가됩니다. 창을 미는 일을 데이터 이동으로 구현했기 때문입니다.
+- **`VectorShift`가 반복마다 slice 두 개를 복사합니다.** 읽기 2개와 쓰기 2개, 즉 반복당 `16HW` byte(샘플 1216 x 896에서 약 16.6 MiB, 1280 x 720에서는 약 14.1 MiB)의 global memory 요청과 launch 하나가 추가됩니다. 창을 미는 일을 데이터 이동으로 구현했기 때문입니다.
 - **엄격한 `<` 동률 처리.** `VectorBox_N_Cost`는 `cost(d-1) < minCosts[1]`일 때만 갱신하므로 동률이면 먼저 나온(작은) disparity가 남습니다. v1/v2의 `min_cost > costs[...]`와 같은 규칙입니다. 후보를 한 단계 늦게 평가해도 후보의 평가 순서는 `0, 1, ..., D-1`로 그대로입니다.
 - **disparity마다 launch 세 개.** fusion은 XOR와 Sum까지만 합쳤고, box filter는 여전히 별도 kernel이며 매 launch 뒤에 `cudaDeviceSynchronize()`가 있습니다.
 - **box filter가 순진한 O(A^2)입니다.** `VectorBox_N_Cost`의 합산 루프는 v1의 `VectorBox`와 같으므로 비용이 A에 따라 늘어납니다.

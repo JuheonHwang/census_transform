@@ -53,15 +53,15 @@ census_v1 LEFT_IMAGE RIGHT_IMAGE [options]
 		"picture taken by the physically RIGHT camera (swap the files if the result looks empty).\n"
 ```
 
-`data/sample`의 [README](../data/README.md)에 따르면 `left.png`에서 본 특징점은 `right.png`에서 왼쪽으로 이동합니다 (`x_right = x_left - d`). 즉 `right.png`의 점이 `left.png`에서는 오른쪽(x + d)에 있으므로, 이 프로그램에서는 **물리적으로 오른쪽 카메라인 `right.png`를 첫 번째 인자**로 줍니다.
+`data/sample`의 [README](../data/README.md)에 따르면 `left.png`는 물리적 왼쪽 카메라 이미지이고, 그 특징점은 `right.png`에서 왼쪽으로 이동합니다 (`x_right = x_left - d`, d > 0). 즉 `right.png`의 점이 `left.png`에서는 오른쪽(x + d)에 있으므로, 이 프로그램에서는 **물리적으로 오른쪽 카메라인 `right.png`를 첫 번째 인자**로 줍니다.
 
 ```bash
 mkdir -p out
 ./build/census_v1 ../data/sample/right.png ../data/sample/left.png \
-    --max-disp 48 --census 7 --aggregate 11 --threshold 1 --no-display --out-dir out
+    --max-disp 128 --census 7 --aggregate 11 --threshold 1 --no-display --out-dir out
 ```
 
-이 경우 `out/left.png`는 "첫 번째 인자(= `right.png`) 시점"의 disparity map이고, `out/right.png`가 `left.png` 시점의 map입니다. 파일 이름의 left/right는 카메라가 아니라 인자 순서를 따릅니다 ([cuda/src/main.cpp:217-218](../cuda/src/main.cpp#L217-L218), [:251-253](../cuda/src/main.cpp#L251-L253), [:260-263](../cuda/src/main.cpp#L260-L263)). 이 샘플 README의 부호 규칙(`d = x_left - x_right`)과 이 프로그램의 `x + d` 규칙이 서로 반대라는 점이 헷갈리는 지점이므로 [확인이 필요한 부분 4](#확인이-필요한-부분)에도 적어 두었습니다. 결과가 텅 비어 보이면 두 파일을 바꿔 보라는 안내가 usage에 있습니다.
+이 경우 `out/left.png`는 "첫 번째 인자(= `right.png`) 시점"의 disparity map이고, `out/right.png`가 `left.png` 시점의 map입니다. 파일 이름의 left/right는 카메라가 아니라 인자 순서를 따릅니다 ([cuda/src/main.cpp:217-218](../cuda/src/main.cpp#L217-L218), [:251-253](../cuda/src/main.cpp#L251-L253), [:260-263](../cuda/src/main.cpp#L260-L263)). 샘플 데이터 README가 적은 부호 규칙(`left.png`가 물리적 왼쪽 카메라, `d = x_left - x_right > 0`)과 이 프로그램의 `x + d` 규칙이 서로 반대라는 점이 헷갈리는 지점이므로 [확인이 필요한 부분 4](#확인이-필요한-부분)에도 적어 두었습니다. 결과가 텅 비어 보이면 두 파일을 바꿔 보라는 안내가 usage에 있습니다.
 
 `computation time`은 `DiffBoxImages()` 호출 하나를 `clock()`으로 감싼 값입니다 ([cuda/src/main.cpp:250-256](../cuda/src/main.cpp#L250-L256)). 측정 방법의 세부는 [09장](09_cuda_rolling_buffer.md#실행-시간-측정하기)에서 다룹니다.
 
@@ -182,8 +182,8 @@ kernel은 thread 하나가 출력 byte 하나를 맡으므로 `idx`를 거꾸로
 ### 계산 예: K = 7
 
 - `n = ceil(49 / 8) = 7`, `B = ceil(7 / 8) = 1`. 한 window 행이 정확히 byte 하나이고(7 bit, 최상위 bit 하나는 비어 있음), 행 7개 = byte 7개입니다.
-- 픽셀당 7 byte이므로 W = 1280이면 이미지 한 행은 1280 x 7 = 8960 byte입니다.
-- 픽셀 (i = 2, j = 3)의 byte `b = 4`는 `(2 * 1280 + 3) * 7 + 4 = 17945`번째 byte입니다. `c_i = 4 / 1 = 4`이므로 window의 다섯 번째 행(이미지 행 `2 + 4 - 3 = 3`)을 나타내고, 열 `c_j = 0..6`은 이미지 열 `0..6`입니다. 값은 7 bit이고 `c_j = 0`이 가장 위쪽 bit(MSB first)입니다.
+- 픽셀당 7 byte이므로 W = 1216이면 이미지 한 행은 1216 x 7 = 8512 byte입니다.
+- 픽셀 (i = 2, j = 3)의 byte `b = 4`는 `(2 * 1216 + 3) * 7 + 4 = 17049`번째 byte입니다. `c_i = 4 / 1 = 4`이므로 window의 다섯 번째 행(이미지 행 `2 + 4 - 3 = 3`)을 나타내고, 열 `c_j = 0..6`은 이미지 열 `0..6`입니다. 값은 7 bit이고 `c_j = 0`이 가장 위쪽 bit(MSB first)입니다.
 
 K = 7은 `n = K * B`라서 window가 빠짐없이 인코딩됩니다. K = 11은 사정이 다릅니다. `n = ceil(121 / 8) = 16`, `B = 2`이고, byte `b = 9`는 `c_i = 9 / 2 = 4`, `(b % 2) * 8 = 8`열부터 시작하므로 열 8, 9, 10의 3 bit(오른쪽 정렬)입니다. 그런데 이 `n`으로는 window 행이 11개가 아니라 8개(`c_i = 0..7`)까지만 담깁니다. 자세한 내용은 [확인이 필요한 부분 2](#확인이-필요한-부분)를 보십시오.
 
@@ -293,12 +293,12 @@ left volume이 `GetDispFloat`가 실행될 때까지(372-373행) 살아 있으�
 
 > peak(v1) = 2nHW + nHW + 2HW + 8DHW = **3nHW + 2HW + 8DHW**
 
-1280 x 720에서 HW = 921,600 byte (0.879 MiB)입니다. MiB(2^20 byte) 단위로 계산하면:
+두 설정의 해상도가 다릅니다. 원래 기본값 설정은 1280 x 720(HW = 921,600 byte, 0.879 MiB), 샘플 설정은 1216 x 896(HW = 1,089,536 byte, 1.039 MiB)입니다. MiB(2^20 byte) 단위로 계산하면:
 
 | 설정 | n | census 2nHW | XOR nHW | Costs 1개 4DHW | peak(v1) |
 |---|---|---|---|---|---|
-| K = 11, D = 300 | 16 | 28.1 MiB | 14.1 MiB | 1054.7 MiB | **2153.3 MiB** (약 2.1 GiB) |
-| 샘플 설정 K = 7, D = 48 | 7 | 12.3 MiB | 6.2 MiB | 168.8 MiB | **357.7 MiB** |
+| 1280x720, K = 11, D = 300 | 16 | 28.1 MiB | 14.1 MiB | 1054.7 MiB | **2153.3 MiB** (약 2.1 GiB) |
+| 샘플 1216x896, K = 7, D = 128 | 7 | 14.5 MiB | 7.3 MiB | 532.0 MiB | **1087.9 MiB** |
 
 식에서 보듯 `8DHW`가 거의 전부입니다. D가 두 배가 되면 메모리도 두 배가 되고, 설정에 따라서는 GPU 메모리 한도에 걸립니다. 또한 `cudaMalloc` 크기를 `max_disp * img_height * img_width * sizeof(uint)`로 계산하는데 앞의 세 곱은 `int`이므로, 1280 x 720에서는 D가 2330을 넘으면 `int` 범위(2^31)를 넘어갑니다 ([cuda/src/v1_baseline.cu:322](../cuda/src/v1_baseline.cu#L322)). 그 전에 메모리가 먼저 부족한 크기라서 실제로 문제 되는 경우는 드뭅니다.
 
@@ -312,7 +312,7 @@ left volume이 `GetDispFloat`가 실행될 때까지(372-373행) 살아 있으�
 | GetDispFloat, GetDispInterp, ThresholdDisp, GetDispUchar | 각 2 (총 8) |
 | 합계 | **6D + 10** |
 
-D = 300이면 1810회, D = 48이면 298회입니다. 대부분이 disparity 루프의 launch이고, 각각이 `cudaDeviceSynchronize()`를 동반합니다. 08장은 이 3D를 2D로 줄입니다.
+D = 300이면 1810회, 샘플 설정(D = 128)이면 778회입니다. 대부분이 disparity 루프의 launch이고, 각각이 `cudaDeviceSynchronize()`를 동반합니다. 08장은 이 3D를 2D로 줄입니다.
 
 ## 확인이 필요한 부분
 

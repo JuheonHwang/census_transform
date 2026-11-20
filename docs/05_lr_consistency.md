@@ -34,17 +34,17 @@ $d_R$도 대칭적으로 $\tilde d_L$와 비교합니다. $\tau$는 임계값(th
 
 ### 수치 예시
 
-샘플 영상의 $(y,x) = (360, 640)$에서 `disp_L = 5.1439`입니다.
+샘플 영상의 $(y,x) = (420, 590)$(2~4장과 같은 픽셀)에서 `disp_L = 64.2259`입니다.
 
 | 단계 | 값 |
 |---|---|
-| 샘플 위치 $x - d_L$ | $640 - 5.1439 = 634.8561$ |
-| 이웃 열 | 634 (`disp_R` = 5.2913), 635 (`disp_R` = 5.2867) |
-| 보간 가중치 $\alpha$ | 0.8561 |
-| 보간 결과 | $0.8561 \times 5.2867 + 0.1439 \times 5.2913 \approx 5.2860$ |
-| 차이 | $\lvert 5.2860 - 5.1439 \rvert \approx 0.142$ |
+| 샘플 위치 $x - d_L$ | $590 - 64.2259 = 525.7741$ |
+| 이웃 열 | 525 (`disp_R` = 64.2516), 526 (`disp_R` = 64.3339) |
+| 보간 가중치 $\alpha$ | 0.7741 |
+| 보간 결과 | $0.7741 \times 64.3339 + 0.2259 \times 64.2516 \approx 64.3153$ |
+| 차이 | $\lvert 64.3153 - 64.2259 \rvert \approx 0.089$ |
 
-$\tau = 1$이므로 통과(유지)합니다. 반대로 가려진 픽셀에서 `disp_L = 10`인데 오른쪽에서 읽은 값이 4였다면 차이는 6이므로 0으로 지워집니다.
+$\tau = 1$이므로 통과(유지)합니다. 반대로 가려진 픽셀에서 `disp_L = 100`인데 오른쪽에서 읽은 값이 94였다면 차이는 6이므로 0으로 지워집니다.
 
 ## 코드
 
@@ -127,16 +127,19 @@ CUDA는 두 커널로 나눕니다. `GetDispInterp`가 보간된 값을 만들�
 
 ## 직접 해보기
 
-전체 해상도에서 CPU로 수 초에서 수십 초 걸립니다(측정 환경에서는 매칭 단계가 약 6초).
+전체 해상도에서 CPU로 수십 초 걸립니다(측정 환경(노트북 CPU)에서는 매칭 단계가 약 21초).
 
 ```python
-import sys; sys.path.insert(0, 'pytorch')
+import sys, time; sys.path.insert(0, 'pytorch')
+import torch
 from torchvision.io import read_image, ImageReadMode
-from census_stereo import stereo_matching, left_right_check
+from census_stereo import stereo_matching, left_right_check, disparity_interp
 
 L = read_image('data/sample/left.png', ImageReadMode.GRAY).unsqueeze(0)
 R = read_image('data/sample/right.png', ImageReadMode.GRAY).unsqueeze(0)
-dL, dR = stereo_matching(L, R, 0, 48, 11, 7, True, 'cpu')
+t = time.time()
+dL, dR = stereo_matching(L, R, 0, 128, 11, 7, True, 'cpu')
+print('matching: %.0f s' % (time.time() - t))
 
 for tau in (1, 3, 10):
     oL, oR = left_right_check(dL, dR, tau)
@@ -146,18 +149,31 @@ for tau in (1, 3, 10):
 oL, oR = left_right_check(dL, dR, 1)
 valid = oL > 0
 print('valid disparity median %.2f, max %.2f' % (oL[valid].median(), oL.max()))
+
+# 수치 예시와 같은 픽셀
+y, x = 420, 590
+R2L, _ = disparity_interp(dL, dR)
+xr = x - dL[0, y, x].item()
+print('disp_L = %.4f, sample column = %.4f' % (dL[0, y, x], xr))
+c = int(xr)
+print('disp_R[%d] = %.4f, disp_R[%d] = %.4f' % (c, dR[0, y, c], c + 1, dR[0, y, c + 1]))
+print('interp = %.4f, diff = %.3f' % (R2L[0, y, x], (R2L[0, y, x] - dL[0, y, x]).abs()))
 ```
 
 실행 결과는 다음과 같습니다.
 
 ```
-threshold  1: invalid L 25.8%  R 26.1%
-threshold  3: invalid L 21.2%  R 21.5%
-threshold 10: invalid L 14.3%  R 14.5%
-valid disparity median 12.30, max 48.00
+matching: 21 s
+threshold  1: invalid L 10.0%  R 10.2%
+threshold  3: invalid L 9.6%  R 9.9%
+threshold 10: invalid L 8.3%  R 8.6%
+valid disparity median 56.58, max 128.00
+disp_L = 64.2259, sample column = 525.7741
+disp_R[525] = 64.2516, disp_R[526] = 64.3339
+interp = 64.3153, diff = 0.089
 ```
 
-임계값을 줄이면 무효 픽셀이 늘고 남은 픽셀의 신뢰도는 높아집니다. 무효 픽셀의 주된 원인은 일반적으로 (1) 왼쪽 영상 가장자리에서 오른쪽에 대응 점이 없는 영역, (2) 가려진 영역, (3) 텍스처가 부족한 영역입니다. 결과를 이미지로 저장해 보려면 `save_disparity(oL, oR, 'out')`를 사용합니다.
+임계값을 줄이면 무효 픽셀이 늘고 남은 픽셀의 신뢰도는 높아집니다. 이 샘플에서는 $\tau=1$에서 약 90%의 픽셀이 유효하며(무효 약 10%), 임계값을 10까지 완화해도 무효 비율이 8%대에 머무릅니다. 즉 일관성 검사에서 걸러지는 픽셀의 대부분은 임계값을 아무리 키워도 통과하지 못하는 큰 불일치입니다. 또한 유효한 disparity의 중앙값이 약 56.6 px이고 `max_disp=128`의 끝값(128)도 일부 남아 있으므로, 결과를 쓸 때 탐색 범위 끝 근처 값은 의심해 볼 만합니다. 무효 픽셀의 주된 원인은 일반적으로 (1) 왼쪽 영상 가장자리에서 오른쪽에 대응 점이 없는 영역, (2) 가려진 영역, (3) 텍스처가 부족한 영역입니다. 결과를 이미지로 저장해 보려면 `save_disparity(oL, oR, 'out')`를 사용합니다.
 
 ## 구현별 차이
 

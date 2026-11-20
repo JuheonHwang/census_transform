@@ -153,7 +153,7 @@ left pass는 slice `0..D-1`을 모두 쓰고, right pass도 `0..D-1`을 모두 �
 | Sum | 읽기 nHW + 쓰기 2HW | 읽기 2nHW + 쓰기 2HW |
 | 합계 | **4nHW + 2HW** | **2nHW + 2HW** |
 
-K = 11(n = 16)이면 v1은 66HW, v2는 34HW byte이고, 1280 x 720(HW = 921,600)에서 약 58.0 MiB 대 29.9 MiB입니다. K = 7(n = 7)이면 30HW 대 16HW, 즉 약 26.4 MiB 대 14.1 MiB입니다. 줄어든 것은 정확히 XOR 중간 buffer의 쓰기와 읽기(2nHW) 입니다.
+K = 11(n = 16)이면 v1은 66HW, v2는 34HW byte이고, 1280 x 720(HW = 921,600)에서 약 58.0 MiB 대 29.9 MiB입니다. K = 7(n = 7)이면 30HW 대 16HW이고, 샘플 1216 x 896(HW = 1,089,536)에서 약 31.2 MiB 대 16.6 MiB입니다. 줄어든 것은 정확히 XOR 중간 buffer의 쓰기와 읽기(2nHW) 입니다.
 
 **메모리.** XOR buffer `nHW`가 없어지고, volume이 방향별로 둘이던 것이 하나가 됩니다.
 
@@ -184,17 +184,17 @@ launch 횟수는 census 2 + 방향별 `2D`(XOR_N_Sum, Box) x 2 + 나머지 8 = *
 | XOR buffer | nHW (방향마다 할당) | 없음 |
 | cost volume | 4DHW x 2 (공존) | 4DHW x 1 (재사용) |
 | peak 메모리 | 3nHW + 2HW + 8DHW | 2nHW + 6HW + 4DHW |
-| K = 11, D = 300, 1280x720 | 2153.3 MiB | 1088.1 MiB |
-| K = 7, D = 48, 1280x720 | 357.7 MiB | 186.3 MiB |
-| D = 300 launch 수 | 1810 | 1210 |
-| D = 48 launch 수 | 298 | 202 |
+| 1280x720, K = 11, D = 300 | 2153.3 MiB | 1088.1 MiB |
+| 샘플 1216x896, K = 7, D = 128 | 1087.9 MiB | 552.8 MiB |
+| D = 300 launch 수 (해상도 무관) | 1810 | 1210 |
+| D = 128 launch 수 (해상도 무관) | 778 | 522 |
 | 실행 시간 | 측정 필요 | 측정 필요 |
 
-계산 근거: HW = 921,600, MiB = 2^20 byte. K = 11이면 n = 16, K = 7이면 n = 7입니다. D가 큰 설정에서는 volume 항(`8DHW` 대 `4DHW`)이 지배적이라 메모리가 거의 절반이 됩니다.
+계산 근거: 1280 x 720은 HW = 921,600, 샘플 1216 x 896은 HW = 1,089,536이고, MiB = 2^20 byte. K = 11이면 n = 16, K = 7이면 n = 7입니다. D가 큰 설정에서는 volume 항(`8DHW` 대 `4DHW`)이 지배적이라 메모리가 거의 절반이 됩니다.
 
 ## 4. 여전히 비싼 것
 
-v2에서도 남은 가장 큰 비용은 **cost volume `4DHW` byte**입니다. K = 11, D = 300에서 1054.7 MiB, 샘플 설정(D = 48)에서도 168.8 MiB로, 전체 peak의 대부분입니다. 이 volume은 다음과 같이 쓰입니다.
+v2에서도 남은 가장 큰 비용은 **cost volume `4DHW` byte**입니다. 1280 x 720, K = 11, D = 300에서 1054.7 MiB, 샘플 설정(1216 x 896, D = 128)에서도 532.0 MiB로, 전체 peak의 대부분입니다. 이 volume은 다음과 같이 쓰입니다.
 
 - `VectorBox`가 disparity마다 slice 하나를 씁니다 (`costs[disp * img_h * img_w + idx]`, [v2:137](../cuda/src/v2_fused.cu#L137)).
 - `GetDispFloat`가 모든 slice를 한 번씩 읽어 최솟값과 그 이웃 세 값만 취합니다 ([v2:155-160](../cuda/src/v2_fused.cu#L155-L160)).

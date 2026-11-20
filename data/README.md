@@ -1,76 +1,99 @@
 # Sample stereo pair
 
 `sample/left.png` and `sample/right.png` are a rectified pair of 8-bit, single-channel
-infrared (near-IR) images from the public dataset *Digiteo_seq3_Stereo*. They are used by
-the tutorial in place of private capture data.
+active infrared (IR) stereo images taken from the public **GigaDepth** dataset. The
+sensor's IR dot projector was on, so a dense dot / speckle pattern is visible in both
+images. They are used by the tutorial in place of private capture data.
 
-There is **no ground-truth disparity** for this pair (the source dataset does not provide any).
+There is **no ground-truth disparity** for this pair. The source dataset also contains depth
+maps (`depth*.png`, 1280 x 960, 16-bit), but their alignment to the IR images was not
+verified, so no ground truth is shipped in this repository.
 
 ## Source
 
-- Dataset: "Digiteo_seq3_Stereo", Mendeley Data, Version 2, 2021
-- Authors: Imad El Bouazzaoui, Sergio Rodriguez Florez, Abdelhafid El Ouardi (Paris-Saclay University)
-- DOI: https://doi.org/10.17632/c2gtvyxyt7.2
-- Landing page: https://data.mendeley.com/datasets/c2gtvyxyt7
-- Files used: `Stereo/image_0/frame600.png` (left) and `Stereo/image_1/frame600.png` (right).
-  They are copied unmodified (already 8-bit grayscale); only renamed.
+- Dataset: "GigaDepth: Learning Depth from Structured Light with Branching Neural Networks",
+  TU Wien Research Data, published 2022-10-22
+- Authors: Simon Schreiberhuber, Jean-Baptiste Weibel, Timothy Patten, Markus Vincze
+- DOI: https://doi.org/10.48436/q76vf-y9t57
+- Landing page: https://researchdata.tuwien.at/records/q76vf-y9t57
+- File used: `dataset_gigadepth_jpg.zip`, the first scene folder under `captured_test/`
+  (the dataset's real-world captures), file `ir0.png`. This is a 2432 x 896, 16-bit
+  grayscale image that holds both IR cameras side by side.
+- Accompanying paper: the dataset's title is also the title of the ECCV 2022 paper below.
 
 ```bibtex
-@misc{elbouazzaoui2021digiteo,
-  author    = {El Bouazzaoui, Imad and Rodriguez Florez, Sergio and El Ouardi, Abdelhafid},
-  title     = {Digiteo\_seq3\_Stereo},
-  year      = {2021},
-  publisher = {Mendeley Data},
-  version   = {2},
-  doi       = {10.17632/c2gtvyxyt7.2},
-  url       = {https://data.mendeley.com/datasets/c2gtvyxyt7}
+@misc{schreiberhuber2022gigadepth_data,
+  author    = {Schreiberhuber, Simon and Weibel, Jean-Baptiste and Patten, Timothy and Vincze, Markus},
+  title     = {GigaDepth: Learning Depth from Structured Light with Branching Neural Networks},
+  year      = {2022},
+  publisher = {TU Wien Research Data},
+  doi       = {10.48436/q76vf-y9t57},
+  url       = {https://researchdata.tuwien.at/records/q76vf-y9t57}
+}
+
+@inproceedings{schreiberhuber2022gigadepth,
+  author    = {Schreiberhuber, Simon and Weibel, Jean-Baptiste and Patten, Timothy and Vincze, Markus},
+  title     = {GigaDepth: Learning Depth from Structured Light with Branching Neural Networks},
+  booktitle = {European Conference on Computer Vision (ECCV)},
+  year      = {2022}
 }
 ```
 
 ## Licence
 
-Creative Commons Attribution 4.0 International (CC BY 4.0),
-http://creativecommons.org/licenses/by/4.0 . As stated on the dataset page, you may share,
-copy and modify the dataset so long as you give appropriate credit, link to the licence, and
-indicate changes. This permits redistributing these two images here with the attribution
-above. (The two images are not modified.) The licence applies to these two image files
-only, not to the code in this repository.
+Creative Commons Attribution 4.0 International (CC BY 4.0), as stated in the dataset
+record's metadata, https://creativecommons.org/licenses/by/4.0/ . You may share and adapt the
+material as long as you give appropriate credit, link to the licence, and indicate changes.
+The changes made to the images are listed below. The licence applies to these two image
+files only, not to the code in this repository.
+
+## Modifications
+
+The two images in this repository are **modified** from the original `ir0.png`:
+
+1. The 2432 x 896 image was split into two 1216 x 896 halves.
+2. The halves were swapped. In the original file the first half (x < 1216) is the
+   **right** camera and the second half the **left** camera. This was determined
+   empirically from feature matches: `x_left - x_right > 0` holds only after swapping.
+3. The 16-bit values were converted to 8 bit with a percentile stretch (0.5th to 99.8th
+   percentile mapped to 0..255, clipped), so the brightest dots are saturated.
+
+No other processing (no cropping, resizing, filtering or rectification) was applied.
 
 ## What the images are
 
 | Property | Value |
 |---|---|
-| Sensor | Intel RealSense D435i, left/right infrared imagers (global shutter, near-IR, roughly 850 nm band) |
-| Scene | Underground car park (Digiteo building 660, Paris-Saclay); a checkerboard, a pillar and cars in the foreground |
-| Size | 1280 x 720 px |
+| Sensor | Occipital Structure Core (stereo IR cameras with an IR dot-pattern projector) |
+| Illumination | Active: IR dot projector on, dense dot / speckle pattern visible in both images (active IR stereo) |
+| Scene | Lab desk with boxes, a calibration target and an ArUco marker |
+| Size | 1216 x 896 px each |
 | Format | PNG, 8-bit, 1 channel (mode `L`) |
-| Rectified | Yes (D435 factory rectification). Measured: median vertical offset of matched features 0.02 px; 5-95 percentile -0.4 to +0.8 px |
-| Left / right | `left.png` = `image_0`, `right.png` = `image_1`. Matched features move **left** from left to right image (x_left - x_right > 0), the standard convention, so `d = x_left - x_right`, searching `x_right = x_left - d` |
-| Focal length / baseline | fx = fy = 638.149 px, cx = 639.76, cy = 356.51, baseline about 50 mm (`bf` = 31.90 px*m in the dataset's `param.yaml`) |
-| Illumination | Ambient car-park lighting. The dataset page only says "Stereo mode"; no projected dot pattern is visible in the images, so the IR projector appears to be off (not verified from the source). The scene is therefore passive NIR stereo, not active-pattern stereo. |
+| Rectified | Approximately. SIFT matches show a constant sub-pixel row bias: vertical offset median -0.59 px, 5th-95th percentile -0.94 to -0.30 px |
+| Left / right | `left.png` is the left camera, `right.png` the right camera. Matched features move **left** from the left to the right image (`x_left - x_right > 0`), the standard convention, so `d = x_left - x_right`, searching `x_right = x_left - d` |
+| Disparity | Matched features: 45 to 102 px (1st-99th percentile), median 90 px. The tutorial pipeline's valid disparities (see below): 39.6 / 56.6 / 100.0 px at the 1st / 50th / 99th percentile |
 
-Depth from disparity: `Z = 638.149 * 0.05 / d` metres (about 1.1 m at d = 28 px, about 7 m at d = 4.6 px).
+Calibration values (focal length, baseline) are not shipped with the pair and are not
+needed by the tutorial, which stops at disparity.
 
-## Disparity range and suggested parameters
+## Suggested parameters
 
-Measured on this pair (SIFT matches with |dy| < 3 px, plus OpenCV SGBM as a cross-check):
-disparity is roughly 0.05 to 29.5 px (SIFT min/max); SGBM 1st-99th percentile 4.25 to 27.9 px;
-all positive. The baseline is short, so the range is modest.
+Measured with the PyTorch pipeline in `pytorch/census_stereo.py`:
 
-Suggested starting values (heuristic, from a quick sanity check against SGBM, not tuned):
+```
+census 7, aggregation 11, max_disp 128, LR threshold 1
+```
 
-- `max_disp`: 32 (covers the observed maximum of about 30; use 48 if you want headroom,
-  but values above about 32 only add false matches in the textureless concrete)
-- Census window: 7 x 7 (5 x 5 also works but is noisier on the low-texture concrete floor and walls)
-- Aggregation (box) window: 9 x 9 to 15 x 15 (larger windows gave better agreement with SGBM
-  on this smooth, low-texture scene; in a quick check with a plain winner-takes-all
-  census + box filter, agreement within 1 px with SGBM was about 0.65 for 7x7/9x9 and 0.75 for 7x7/15x15)
-- Expect noise in the dark/bright saturated regions and on the concrete floor; add a
-  left-right consistency check and/or uniqueness test in the tutorial.
+With these settings about 90% of the pixels keep a valid disparity after the left-right
+check, and the matching takes roughly 12 s on a laptop CPU. The sample's disparities reach
+about 100 px, so `max_disp` has to be above that (128 is used here); a smaller value such as
+64 would cut off the nearer parts of the scene. These values are a reasonable starting
+point, not tuned.
 
 ## Obtaining the full dataset
 
-The full archive (`Digiteo_seq3_Stereo.zip`, about 4.2 GB, 7144 stereo frames, `image_0` /
-`image_1` in KITTI-like layout, no registration needed) can be downloaded from the landing
-page above ("Download All"). Other frames can also be pulled individually with HTTP range
-requests against the ZIP file.
+The full dataset is very large (the zip archives are about 463 GB and 187 GB), so the tutorial
+does not need it. It can be downloaded from the landing page above. A single frame can be
+pulled without downloading the whole archive by issuing HTTP range requests against the zip
+file (read the central directory at the end of the archive, then request just the bytes of
+the entry you want and inflate it).

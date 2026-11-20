@@ -8,7 +8,7 @@
 
 ## 개념 설명
 
-2장에서 보았듯이 한 픽셀의 census 비트열(7x7이면 49비트)만으로는 올바른 disparity에서도 비용이 충분히 낮지 않거나 다른 disparity와 구분이 안 될 수 있습니다. 가정을 하나 추가합니다. **이웃 픽셀은 대체로 같은 disparity를 가진다**(국소적 smoothness, fronto-parallel 가정). 그러면 각 disparity $d$마다 픽셀 주변 $w \times w$ 영역의 비용을 더해서 비교하는 것이 더 신뢰할 만합니다.
+2장에서 보았듯이 한 픽셀의 census 비트열(7x7이면 49비트)만으로는 올바른 disparity에서도 비용이 충분히 낮지 않거나 다른 disparity와 구분이 안 될 수 있습니다. 샘플 영상처럼 도트 패턴이 있어도 후보가 129개이면 우연히 낮은 비용이 나오는 후보가 생깁니다. 가정을 하나 추가합니다. **이웃 픽셀은 대체로 같은 disparity를 가진다**(국소적 smoothness, fronto-parallel 가정). 그러면 각 disparity $d$마다 픽셀 주변 $w \times w$ 영역의 비용을 더해서 비교하는 것이 더 신뢰할 만합니다.
 
 이 단순한 방법이 **box filter 집계**입니다. 각 disparity 슬라이스(`(H, W)` 비용 맵)에 독립적으로 $w \times w$ 합계 필터를 적용합니다.
 
@@ -78,7 +78,7 @@ CUDA의 `VectorBox`는 픽셀당 스레드 하나가 창 안을 이중 루프로
 
 ## 직접 해보기
 
-집계 전(`agg_size=1`)과 후(`agg_size=11`)의 비용 곡선과 WTA 결과를 비교합니다. CPU에서 수십 초 걸립니다.
+집계 전(`agg_size=1`)과 후(`agg_size=11`)의 비용 곡선과 WTA 결과를 비교합니다. CPU에서 약 30초 걸립니다.
 
 ```python
 import sys; sys.path.insert(0, 'pytorch')
@@ -90,35 +90,37 @@ L = read_image('data/sample/left.png', ImageReadMode.GRAY).unsqueeze(0)
 R = read_image('data/sample/right.png', ImageReadMode.GRAY).unsqueeze(0)
 cL, cR = census_transform(L, 7), census_transform(R, 7)
 
-raw = build_cost_volume(cL, cR, 0, 48, 1, +1)     # agg_size=1: 집계 없음
-agg = build_cost_volume(cL, cR, 0, 48, 11, +1)    # 11x11 box
+raw = build_cost_volume(cL, cR, 0, 128, 1, +1)     # agg_size=1: 집계 없음
+agg = build_cost_volume(cL, cR, 0, 128, 11, +1)    # 11x11 box
 print(agg.shape)
 
-y, x = 360, 640
-print('raw', raw[0, y, x].int().tolist()[:12], 'argmin', raw[0, y, x].argmin().item())
-print('agg', agg[0, y, x].int().tolist()[:12], 'argmin', agg[0, y, x].argmin().item())
+y, x = 420, 590
+print('raw', raw[0, y, x].int().tolist()[60:69], 'argmin', raw[0, y, x].argmin().item())
+print('agg', agg[0, y, x].int().tolist()[60:69], 'argmin', agg[0, y, x].argmin().item())
 
 d_raw = winner_take_all(raw, 0, False)
 d_agg = winner_take_all(agg, 0, False)
 dx = lambda d: (d[..., 1:] - d[..., :-1]).abs().mean().item()
 print('mean |d(x+1)-d(x)|  raw: %.2f  agg: %.2f' % (dx(d_raw), dx(d_agg)))
+print('argmin agrees with agg within 1 px: %.2f' % ((d_raw - d_agg).abs() <= 1).float().mean().item())
 
-ones = torch.ones(1, 1, 720, 1280)
+ones = torch.ones(1, 1, 896, 1216)
 box = torch.ones(1, 1, 11, 11)
-print(F.conv2d(ones, box, padding='same')[0, 0, [0, 2, 5, 360], [0, 2, 5, 640]].tolist())
+print(F.conv2d(ones, box, padding='same')[0, 0, [0, 2, 5, 420], [0, 2, 5, 590]].tolist())
 ```
 
 실행 결과는 다음과 같습니다.
 
 ```
-torch.Size([1, 720, 1280, 49])
-raw [24, 26, 16, 15, 17, 11, 11, 14, 10, 7, 8, 17] argmin 9
-agg [2354, 2259, 2084, 1949, 1768, 1466, 1633, 1763, 1752, 1766, 1864, 2002] argmin 5
-mean |d(x+1)-d(x)|  raw: 4.85  agg: 0.77
+torch.Size([1, 896, 1216, 129])
+raw [29, 34, 35, 31, 15, 7, 13, 27, 27] argmin 82
+agg [3275, 3112, 2574, 1843, 1181, 1431, 2409, 2958, 3069] argmin 64
+mean |d(x+1)-d(x)|  raw: 23.97  agg: 0.69
+argmin agrees with agg within 1 px: 0.35
 [36.0, 64.0, 121.0, 121.0]
 ```
 
-집계 후에는 이웃 픽셀 간 disparity 차이의 평균이 4.85에서 0.77로 크게 줄어듭니다(WTA 결과가 매끄러워짐). 집계 비용 곡선은 $d=5$ 부근에서 뚜렷한 골을 가지고(1466, 양옆 1768/1633), 이것이 4장의 sub-pixel 보간 입력이 됩니다. `agg_size`를 3, 7, 15 등으로 바꿔 직접 비교해 보세요.
+`raw`와 `agg`의 첫 줄은 모두 $d=60 \dots 68$ 구간의 값입니다. 집계 전에는 이 구간에서 $d=65$(7)가 낮을 뿐이고 129개 후보 전체의 최솟값은 $d=82$에 있었지만, 집계 후에는 $d=64$에서 뚜렷한 골이 생깁니다(1181, 양옆 1843/1431). 이웃 픽셀 간 disparity 차이의 평균은 23.97에서 0.69로 크게 줄어들고(WTA 결과가 매끄러워짐), 집계 전후 WTA가 1 px 이내로 일치하는 픽셀은 35%에 불과합니다. 집계 전 WTA는 도트 패턴이 있어도 상당수 픽셀에서 엉뚱한 후보를 고른다는 뜻입니다. 이 집계 비용 곡선의 골이 4장의 sub-pixel 보간 입력이 됩니다. `agg_size`를 3, 7, 15 등으로 바꿔 직접 비교해 보세요.
 
 ## 구현별 차이
 

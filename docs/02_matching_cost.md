@@ -4,7 +4,7 @@
 
 - 두 census 비트열이 얼마나 다른지를 **Hamming distance**로 재고, 이를 XOR + popcount로 계산하는 방법을 배웁니다.
 - 모든 후보 disparity에 대해 비용을 계산해 **cost volume**을 만드는 구조와 "shift 방향"의 의미를 이해합니다.
-- 픽셀 단위 비용만으로는 부족한 이유를 확인하고 3장으로 연결합니다.
+- 후보 disparity가 많을 때 픽셀 단위 비용만으로는 부족한 이유를 확인하고 3장으로 연결합니다.
 
 ## 개념 설명
 
@@ -115,24 +115,26 @@ L = read_image('data/sample/left.png', ImageReadMode.GRAY).unsqueeze(0)
 R = read_image('data/sample/right.png', ImageReadMode.GRAY).unsqueeze(0)
 cL, cR = census_transform(L, 7), census_transform(R, 7)
 
-y, x = 360, 640
+y, x = 420, 590
 costs = []
-for d in range(49):                       # reference = left
+for d in range(129):                     # reference = left
     tgt = shift_census(cR, d, +1)         # tgt[x] = cR[x - d]
     hamming = torch.bitwise_xor(cL, tgt).sum(dim=3)
     costs.append(hamming[0, y, x].item())
-print(costs)
+print(costs[60:69])
 print('min cost', min(costs), 'at d =', costs.index(min(costs)))
+print('cost at d=64:', costs[64], '/ candidates with cost <= that:', sum(c <= costs[64] for c in costs), 'of', len(costs))
 ```
 
 실행 결과는 다음과 같습니다.
 
 ```
-[24, 26, 16, 15, 17, 11, 11, 14, 10, 7, 8, 17, 13, 17, 14, 21, 20, 31, 33, 30, 30, 26, 26, 27, 30, 29, 29, 31, 18, 32, 27, 30, 28, 27, 25, 26, 29, 32, 30, 24, 24, 28, 31, 26, 25, 23, 22, 25, 30]
-min cost 7 at d = 9
+[29, 34, 35, 31, 15, 7, 13, 27, 27]
+min cost 5 at d = 82
+cost at d=64: 15 / candidates with cost <= that: 34 of 129
 ```
 
-비용은 0~49 범위이고, 이 픽셀에서는 $d=9$가 최소(7)이지만 $d=5, 6$(11)과 $d=10$(8)도 비슷하게 낮습니다. 즉 **픽셀 하나의 7x7 창만으로는 판별력이 부족합니다.** 3장에서 같은 위치를 11x11 영역으로 집계하면 최소가 $d=5$로 이동하며, 곡선이 훨씬 안정적입니다.
+비용은 0~49 범위입니다. 첫 줄은 $d=60 \dots 68$의 비용으로, $d=65$에서 7까지 내려가는 골이 보입니다. 그러나 129개 후보 전체에서 최소는 $d=82$의 5이고, 이 픽셀의 픽셀 단위 최솟값은 이웃 픽셀들과 일관되지 않은 위치에서 나왔을 가능성이 높습니다(3장에서 집계하면 이 픽셀은 $d=64$ 부근으로 정리되고, 5장의 좌우 검사도 통과합니다). $d=64$의 비용 15보다 같거나 낮은 후보가 129개 중 34개나 있습니다. 샘플에는 능동 IR 도트 패턴이 있어 텍스처 자체는 풍부하지만, 49비트 하나만 비교하면 후보가 129개로 많은 만큼 우연히 낮은 비용이 나오는 후보도 늘어납니다. 즉 **픽셀 하나의 7x7 창(49비트)만으로는 이처럼 많은 후보 중에서 올바른 위치를 고르기에 판별력이 부족합니다.** 3장에서 같은 위치를 11x11 영역으로 집계하면 최소가 $d=64$에서 분명한 골을 이룹니다.
 
 ## 구현별 차이
 

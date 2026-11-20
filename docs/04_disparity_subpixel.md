@@ -38,7 +38,7 @@ $$
 \text{offset} = \frac{26 - 30}{2\,(2\cdot 20 - 30 - 26)} = \frac{-4}{2\cdot(-16)} = 0.125
 $$
 
-검산: $a = (30+26-40)/2 = 8$, $b = (26-30)/2 = -2$, $x^* = 2/16 = 0.125$. 오른쪽 이웃(26)이 왼쪽 이웃(30)보다 낮으므로 꼭짓점이 오른쪽으로 조금 치우칩니다. 샘플 영상의 실제 값은 아래 "직접 해보기"에서 확인합니다.
+검산: $a = (30+26-40)/2 = 8$, $b = (26-30)/2 = -2$, $x^* = 2/16 = 0.125$. 오른쪽 이웃(26)이 왼쪽 이웃(30)보다 낮으므로 꼭짓점이 오른쪽으로 조금 치우칩니다. 샘플 영상의 실제 값은 아래 "직접 해보기"에서 확인합니다(3장과 같은 픽셀 $(y,x)=(420,590)$에서 비용 $1843,\ 1181,\ 1431$, 보정량 약 $0.226$).
 
 ```
 cost
@@ -148,9 +148,9 @@ from census_stereo import census_transform, build_cost_volume, winner_take_all
 
 L = read_image('data/sample/left.png', ImageReadMode.GRAY).unsqueeze(0)
 R = read_image('data/sample/right.png', ImageReadMode.GRAY).unsqueeze(0)
-cost = build_cost_volume(census_transform(L, 7), census_transform(R, 7), 0, 48, 11, +1)
+cost = build_cost_volume(census_transform(L, 7), census_transform(R, 7), 0, 128, 11, +1)
 
-y, x = 360, 640
+y, x = 420, 590
 i = cost[0, y, x].argmin().item()
 cm, c0, cp = cost[0, y, x, i - 1:i + 2].tolist()
 print('d* =', i, 'costs =', (cm, c0, cp))
@@ -160,20 +160,20 @@ d_int = winner_take_all(cost, 0, sub_pixel=False)
 d_sub = winner_take_all(cost, 0, sub_pixel=True)
 print('integer', d_int[0, y, x].item(), ' sub-pixel', d_sub[0, y, x].item())
 print('changed pixels: %.3f' % ((d_sub != d_int).float().mean().item()))
-print('argmin at 0 or 48: %.3f' % (((d_int == 0) | (d_int == 48)).float().mean().item()))
+print('argmin at 0 or 128: %.3f' % (((d_int == 0) | (d_int == 128)).float().mean().item()))
 ```
 
 실행 결과는 다음과 같습니다.
 
 ```
-d* = 5 costs = (1768.0, 1466.0, 1633.0)
-manual offset = 0.1439232409381663
-integer 5.0 sub-pixel 5.143923282623291
-changed pixels: 0.935
-argmin at 0 or 48: 0.061
+d* = 64 costs = (1843.0, 1181.0, 1431.0)
+manual offset = 0.22587719298245615
+integer 64.0 sub-pixel 64.22587585449219
+changed pixels: 0.996
+argmin at 0 or 128: 0.003
 ```
 
-수동 계산과 `winner_take_all`의 결과가 일치합니다. 약 93.5%의 픽셀이 보정되었고, 약 6.1%는 최솟값이 탐색 범위의 끝($d=0$ 또는 $48$)에 있어 PyTorch에서 보정이 생략됩니다. 끝 값이 많다면 `max_disp`가 너무 작거나 매칭이 실패한 영역이 많다는 신호입니다.
+수동 계산과 `winner_take_all`의 결과가 일치합니다. 약 99.6%의 픽셀이 보정되었고, 약 0.3%는 최솟값이 탐색 범위의 끝($d=0$ 또는 $128$)에 있어 PyTorch에서 보정이 생략됩니다. 이 샘플은 disparity가 대부분 40~100 px라서 `max_disp=128`이 충분하고, 그래서 끝 값 비율이 낮습니다. 끝 값이 많다면 `max_disp`가 너무 작거나 매칭이 실패한 영역이 많다는 신호입니다.
 
 ## 구현별 차이
 

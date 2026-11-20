@@ -22,7 +22,7 @@ IR 스테레오(예: 능동 패턴 프로젝터를 쓰는 카메라)에서는 �
 
 Census transform은 창 안의 밝기를 **단조 증가 변환**(monotonic transform, 예: $I' = aI + b,\ a>0$ 또는 gamma)해도 결과가 바뀌지 않습니다. 대소 관계가 유지되기 때문입니다. 따라서 위의 gain/exposure 차이와 완만한 조명 불균일(창 크기 안에서는 거의 단조 변환으로 근사됨)에 강합니다.
 
-한편 census는 **국소적인 밝기 순서**에 의존하므로, 창 안에 순서를 구분할 만한 텍스처가 있어야 합니다. IR 도트 패턴은 바로 이런 텍스처를 인위적으로 만들어 주므로 궁합이 좋습니다. 반대로 완전히 평평한 영역에서는 비트가 노이즈에 의해 결정되어 매칭이 불안정합니다.
+한편 census는 **국소적인 밝기 순서**에 의존하므로, 창 안에 순서를 구분할 만한 텍스처가 있어야 합니다. IR 도트 패턴은 바로 이런 텍스처를 인위적으로 만들어 주므로 궁합이 좋습니다. 이 튜토리얼의 샘플 영상(Occipital Structure Core로 촬영한 능동 IR 스테레오 쌍, 출처는 [data/README.md](../data/README.md))에서도 두 영상 모두 책상 위 물체와 벽면 위에 조밀한 점·반점(speckle) 패턴이 투영되어 있는 것을 볼 수 있습니다. 반대로 완전히 평평한 영역에서는 비트가 노이즈에 의해 결정되어 매칭이 불안정합니다.
 
 ## 수식
 
@@ -123,7 +123,7 @@ print(census_transform(p, 3)[0, 1, 1].int().tolist())   # [0, 1, 0, 0, 0, 1, 0, 
 # 2) 단조 변환 불변성 (float로 변환해 양자화 영향을 배제)
 L = read_image('data/sample/left.png', ImageReadMode.GRAY).unsqueeze(0)
 c0 = census_transform(L, 7)
-print(c0.shape, c0.dtype)                                          # (1, 720, 1280, 49) bool
+print(c0.shape, c0.dtype)                                          # (1, 896, 1216, 49) bool
 print((c0 == census_transform(L.float() * 0.6 + 10, 7)).float().mean().item())  # gain/offset
 print((c0 == census_transform(L.float() ** 1.5, 7)).float().mean().item())      # gamma
 
@@ -136,13 +136,13 @@ print((c0 == census_transform(R, 7)).float().mean().item())
 
 ```
 [0, 1, 0, 0, 0, 1, 0, 0, 1]
-torch.Size([1, 720, 1280, 49]) torch.bool
+torch.Size([1, 896, 1216, 49]) torch.bool
 1.0
 1.0
-0.6626594662666321
+0.5120044350624084
 ```
 
-gain/offset과 gamma를 적용해도 비트가 100% 같습니다. 반면 좌우 영상을 같은 좌표에서 비교하면 약 66%만 일치합니다. 시차만큼 어긋나 있기 때문이며, 어긋남을 찾아내는 것이 다음 장의 일입니다.
+gain/offset과 gamma를 적용해도 비트가 100% 같습니다. 반면 좌우 영상을 같은 좌표에서 비교하면 약 51%만 일치합니다. 샘플의 disparity가 수십 픽셀(대략 40~100 px)로 크기 때문에 같은 좌표의 두 창은 거의 서로 다른 장면 조각을 보고 있고, 일치율이 무작위 비트의 기대값(50%)에 가깝습니다. 시차만큼 어긋나 있기 때문이며, 어긋남을 찾아내는 것이 다음 장의 일입니다.
 
 ## 구현별 차이
 
